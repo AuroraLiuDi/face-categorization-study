@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Speeded Categorization Task</title>
+
+<script src="https://unpkg.com/jspsych@8.1.0"></script>
+<script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.0.0"></script>
+<script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.0.0"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jspsych@8.1.0/css/jspsych.css">
+
+<style>
+  html, body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: #f4f4f4;
+    font-family: Arial, sans-serif;
+  }
+
+  #jspsych-target {
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .wrap {
+    width: min(900px, 95vw);
+    min-height: 100vh;
+    margin: 0 auto;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .face-box {
+    background: white;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid #ddd;
+  }
+
+  .face-box img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+  }
+
+  .keybox {
+    display: inline-block;
+    border: 1px solid #999;
+    border-radius: 6px;
+    padding: 6px 12px;
+    background: white;
+    margin: 0 4px;
+    font-weight: bold;
+  }
+
+  .small {
+    font-size: 15px;
+    color: #555;
+  }
+
+  #cal-box {
+    border: 3px solid #333;
+    background: white;
+    margin: 30px auto;
+    position: relative;
+  }
+
+  #cal-slider {
+    width: 80%;
+    max-width: 500px;
+  }
+
+  .instruction-text {
+    max-width: 700px;
+    line-height: 1.6;
+  }
+</style>
+</head>
+
+<body>
+<div id="jspsych-target"></div>
+
+<script>
+// ==================== CONFIGURATION ====================
+const IMAGE_FOLDER = "find_bimodal";
+const FACES_PER_PARTICIPANT = 20;
+const REPEATS_PER_FACE = 4;
+
+// Credit card dimensions (standard)
+const CREDIT_CARD_MM = 85.6;
+const TARGET_FACE_MM = 65; // Desired face width in mm
+
+// DataPipe configuration for OSF
+// Replace this with your actual DataPipe endpoint URL from OSF
+const DATAPIPE_URL = "https://pipe.jspsych.org/api/data/";
+// You'll also need your OSF experiment ID - get this from DataPipe setup
+const OSF_EXPERIMENT_ID = "YOUR_OSF_EXPERIMENT_ID";
+
+// ==================== PARTICIPANT ID ====================
+function generateAnonymousID() {
+  // Generate a random anonymous ID (no Prolific PID stored)
+  let existing = sessionStorage.getItem("participantID");
+  if (existing) return existing;
+
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 9);
+  const newID = `sub_${timestamp}_${random}`;
+  
+  sessionStorage.setItem("participantID", newID);
+  return newID;
+}
+
+// ==================== DATA SUBMISSION ====================
+function submitDataToOSF(subjectID, responses) {
+  const payload = {
+    experimentID: OSF_EXPERIMENT_ID,
+    filename: `${subjectID}_${Date.now()}.json`,
+    data: responses
+  };
+
+  console.log("Submitting data to OSF via DataPipe...");
+
+  fetch(DATAPIPE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  })
+  .then(response => {
+    if (!response.ok) {
+      throw new Error(`DataPipe error: ${response.status}`);
+    }
+    return response.text();
+  })
+  .then(() => {
+    console.log("✓ Data successfully sent to OSF via DataPipe");
+  })
+  .catch(err => {
+    console.error("✗ DataPipe upload failed:", err);
+    console.warn("Downloading local backup JSON file...");
+    
+    // Fallback: download locally
+    const dataString = JSON.stringify({
+      subjectID: subjectID,
+      timestamp: new Date().toISOString(),
+      responses: responses
+    }, null, 2);
+    
+    const blob = new Blob([dataString], {type: "application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${subjectID}_backup.json`;
+    a.click();
+  });
+}
+
+// ==================== TRIAL LIST GENERATION ====================
+function makeTrialList(jsPsych, faceImages) {
+  const selected = jsPsych.randomization.shuffle(faceImages)
+    .slice(0, FACES_PER_PARTICIPANT);
+  
+  let trials = [];
+  for (let r = 1; r <= REPEATS_PER_FACE; r++) {
+    const round = jsPsych.randomization.shuffle(selected).map(face => ({
+      face: face,
+      repetition: r
+    }));
+    trials = trials.concat(round);
+  }
+  return trials;
+}
+
+// ==================== EXPERIMENT STRUCTURE ====================
+function startExperiment(faceImages) {
+  const subjectID = generateAnonymousID();
+  
+  // Store calibration data globally
+  let calibrationPxWidth = 300; // default
+  let faceWidthPx = 300;
+
+  const jsPsych = initJsPsych({
+    display_element: 'jspsych-target',
+    show_progress_bar: true,
+    on_finish: () => {
+      const responses = jsPsych.data.get().values();
+      console.log("Experiment complete. Total trials:", responses.length);
+      submitDataToOSF(subjectID, responses);
+      showFinishMessage();
+    }
+  });
+
+  // ========== WELCOME SCREEN ==========
+  const welcome = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+      <div class="wrap">
+        <h1>Welcome to the Study</h1>
+        <div class="instruction-text">
+          <p>Thank you for participating in this research.</p>
+          <p>In this task, you will see faces and categorize them as <strong>Happy</strong> or <strong>Sad</strong> as quickly and accurately as possible.</p>
+          <p>Before we begin, we need to calibrate your screen to ensure all images appear at the same size.</p>
+        </div>
+      </div>
+    `,
+    choices: ["Continue"]
+  };
+
+  // ========== CALIBRATION INSTRUCTIONS ==========
+  const calibrationInstructions = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+      <div class="wrap">
+        <h2>Screen Calibration</h2>
+        <div class="instruction-text">
+          <p>On the next screen, you will see a rectangle.</p>
+          <p><strong>Please get a credit card</strong> (or ID card) and hold it against your screen.</p>
+          <p>Use the slider to adjust the rectangle width until it <strong>exactly matches</strong> the width of your card.</p>
+          <p class="small">This helps us display images at the correct size for everyone.</p>
+        </div>
+      </div>
+    `,
+    choices: ["I'm Ready"]
+  };
+
+  // ========== CALIBRATION TRIAL ==========
+  const calibration = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+      <div class="wrap">
+        <h2>Adjust the Rectangle</h2>
+        <p>Match the rectangle width to your credit card</p>
+        
+        <div id="cal-box" style="width:300px; height:190px;"></div>
+        
+        <div style="margin: 20px auto;">
+          <input type="range" id="cal-slider" min="150" max="500" value="300" step="1">
+        </div>
+        
+        <p class="small">Width: <span id="cal-width-display">300</span> pixels</p>
+        <p class="small">Hold your credit card against the screen and adjust until they match</p>
+      </div>
+    `,
+    choices: ["This Matches My Card"],
+    on_load: function() {
+      const slider = document.getElementById("cal-slider");
+      const box = document.getElementById("cal-box");
+      const display = document.getElementById("cal-width-display");
+      
+      slider.addEventListener("input", () => {
+        const width = slider.value;
+        box.style.width = width + "px";
+        display.textContent = width;
+      });
+    },
+    on_finish: function(data) {
+      const slider = document.getElementById("cal-slider");
+      calibrationPxWidth = parseInt(slider.value, 10);
+      
+      // Calculate face size based on calibration
+      faceWidthPx = Math.round((TARGET_FACE_MM / CREDIT_CARD_MM) * calibrationPxWidth);
+      
+      // Store calibration info
+      data.calibration_px_width = calibrationPxWidth;
+      data.credit_card_mm_width = CREDIT_CARD_MM;
+      data.target_face_mm = TARGET_FACE_MM;
+      data.calculated_face_px = faceWidthPx;
+      data.task = "calibration";
+      
+      console.log(`Calibration: ${calibrationPxWidth}px → Face will be ${faceWidthPx}px`);
+    }
+  };
+
+  // ========== TASK INSTRUCTIONS ==========
+  const taskInstructions = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+      <div class="wrap">
+        <h2>Task Instructions</h2>
+        <div class="instruction-text">
+          <p>You will see a series of faces.</p>
+          <p>For each face, press:</p>
+          <p style="font-size: 20px; margin: 20px 0;">
+            <span class="keybox">F</span> for <strong>Happy</strong>
+            &nbsp;&nbsp;&nbsp;&nbsp;
+            <span class="keybox">J</span> for <strong>Sad</strong>
+          </p>
+          <p><strong>Respond as quickly and accurately as possible.</strong></p>
+          <p class="small">Each face will appear multiple times.</p>
+        </div>
+      </div>
+    `,
+    choices: ["Start Task"]
+  };
+
+  // ========== FIXATION CROSS ==========
+  const fixation = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: '<div class="wrap" style="font-size:48px; font-weight:bold;">+</div>',
+    choices: "NO_KEYS",
+    trial_duration: 500
+  };
+
+  // ========== BUILD TRIAL LIST ==========
+  const trialList = makeTrialList(jsPsych, faceImages);
+
+  const trials = trialList.map(t => {
+    return {
+      timeline: [
+        fixation,
+        {
+          type: jsPsychHtmlKeyboardResponse,
+          stimulus: () => {
+            // Use the calibrated face width
+            const width = faceWidthPx;
+            return `
+              <div class="wrap">
+                <div class="face-box" style="width:${width}px; height:${width}px;">
+                  <img src="${IMAGE_FOLDER}/${t.face}" alt="face stimulus">
+                </div>
+                <p style="margin-top: 20px;">
+                  <span class="keybox">F</span> Happy
+                  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                  <span class="keybox">J</span> Sad
+                </p>
+              </div>
+            `;
+          },
+          choices: ['f', 'j'],
+          data: {
+            task: 'speeded_happy_sad_keypress',
+            face: t.face,
+            repetition: t.repetition,
+            face_width_px: faceWidthPx
+          },
+          on_finish: function(data) {
+            data.choice_label = data.response === 'f' ? 'Happy' : 'Sad';
+          }
+        }
+      ]
+    };
+  });
+
+  // ========== FINAL SCREEN ==========
+  const finish = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: '<div class="wrap"><h2>Task Complete!</h2><p>Click below to submit your data.</p></div>',
+    choices: ['Submit']
+  };
+
+  // ========== RUN EXPERIMENT ==========
+  jsPsych.run([
+    welcome,
+    calibrationInstructions,
+    calibration,
+    taskInstructions,
+    ...trials,
+    finish
+  ]);
+}
+
+// ==================== FINISH MESSAGE ====================
+function showFinishMessage() {
+  document.body.innerHTML = `
+    <div class="wrap" style="margin-top: 20vh;">
+      <h2>Thank you!</h2>
+      <p>Your responses have been saved.</p>
+      <p class="small">You may now close this window.</p>
+    </div>
+  `;
+}
+
+// ==================== LOAD IMAGES AND START ====================
+fetch('file_list.json')
+  .then(r => r.json())
+  .then(faceImages => {
+    console.log(`Loaded ${faceImages.length} face images`);
+    startExperiment(faceImages);
+  })
+  .catch(err => {
+    document.body.innerHTML = `
+      <div class="wrap" style="margin-top: 20vh;">
+        <h2>Error Loading Study</h2>
+        <p>Could not load file_list.json</p>
+        <p class="small">${err}</p>
+        <p class="small">Make sure you're accessing this through a web server (not file://).</p>
+      </div>
+    `;
+  });
+</script>
+</body>
+</html>
